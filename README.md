@@ -19,7 +19,7 @@ To remove the add-on, open **Settings → Add-ons** and follow the prompts to re
 
 The package includes Qt 6.8.3 Release shared libraries and plug-ins, along with Microsoft Visual C++ redistributable DLLs. No separate VST runtime installation is required. Install Windows x64 VST3 effects that support stereo processing and obtain any licenses they require.
 
-Select a plug-in in VTR-PON's VST3 settings to use its audio processing and editor. VTR-PON provides controls for switching plug-ins, bypassing processing, and recovering from errors. Follow each plug-in vendor's instructions for activation, required content, and configuration.
+Select a plug-in in VTR-PON's VST3 settings and click **Apply** to use its audio processing and editor. Selecting a candidate alone does not switch the active plug-in. The current plug-in remains active if applying the candidate fails; select **None** and click **Apply** to remove it. VTR-PON also provides controls for bypassing processing and recovering from errors. Follow each plug-in vendor's instructions for activation, required content, and configuration.
 
 ## Compatibility and limitations
 

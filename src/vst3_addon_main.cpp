@@ -188,6 +188,10 @@ int run(QApplication &app, const QStringList &args) {
         MemoryStream state;
         if (component->getState(&state) == kResultOk) { state.seek(0, IBStream::kIBSeekSet, nullptr); controller->setComponentState(&state); }
     }
+    // prepare() queries IComponent bus information, which requires the UI thread.
+    // Keep the buffers alive until the audio thread has joined below.
+    HostProcessData data;
+    if (!data.prepare(*component, kFrames, kSample32)) return 6;
     if (component->setActive(true) != kResultOk) return 6;
 
     EditorWindow editor;
@@ -196,11 +200,10 @@ int run(QApplication &app, const QStringList &args) {
     auto frame = owned(new Frame); frame->window = &editor;
     IPtr<IPlugView> view;
     std::atomic_bool stop{false};
+    std::atomic_bool warmupComplete{false};
     std::thread audio([&] {
         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         if (processor->setProcessing(true) != kResultOk) { InterlockedExchange(&shared->failed, 1); return; }
-        HostProcessData data;
-        if (!data.prepare(*component, kFrames, kSample32)) { InterlockedExchange(&shared->failed, 1); return; }
         auto &input = data.inputs[0]; auto &output = data.outputs[0];
         float *leftIn = input.channelBuffers32[0], *rightIn = input.channelBuffers32[1];
         float *leftOut = output.channelBuffers32[0], *rightOut = output.channelBuffers32[1];
@@ -230,8 +233,8 @@ int run(QApplication &app, const QStringList &args) {
             if (us > shared->warmupMaxUs) InterlockedExchange(&shared->warmupMaxUs, us);
             if (result != kResultOk) { InterlockedExchange(&shared->failed, 1); return; }
         }
-        InterlockedExchange(&shared->latency, long(processor->getLatencySamples()));
-        InterlockedExchange(&shared->ready, 1);
+        // The UI thread publishes readiness after querying latency there.
+        warmupComplete = true;
         while (!stop) {
             if (WaitForSingleObject(request, 100) != WAIT_OBJECT_0) continue;
             const auto n = shared->frames;
@@ -297,7 +300,12 @@ int run(QApplication &app, const QStringList &args) {
         }
         const int32 restart = handler->restart.exchange(0);
         if (restart & (kIoChanged | kReloadComponent)) InterlockedExchange(&shared->failed, 1);
-        if (restart & kLatencyChanged) InterlockedExchange(&shared->latency, long(processor->getLatencySamples()));
+        const bool publishReady = warmupComplete.exchange(false);
+        if ((publishReady || (restart & kLatencyChanged)) && !InterlockedCompareExchange(&shared->failed, 0, 0)) {
+            // getLatencySamples() is a UI-thread API, including the initial query.
+            InterlockedExchange(&shared->latency, long(processor->getLatencySamples()));
+            if (publishReady) InterlockedExchange(&shared->ready, 1);
+        }
         if (controller && (restart & kParamValuesChanged)) {
             for (int32 i = 0; i < controller->getParameterCount(); ++i) {
                 ParameterInfo info{};
