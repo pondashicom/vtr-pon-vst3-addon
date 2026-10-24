@@ -1,4 +1,5 @@
 #include "vst_protocol.h"
+#include "vst_deadline.h"
 #include <objbase.h>
 #include "public.sdk/source/vst/hosting/module.h"
 #include "public.sdk/source/vst/hosting/plugprovider.h"
@@ -133,8 +134,14 @@ int run(QApplication &app, const QStringList &args) {
     const QString id = argument(args, "--run");
     HANDLE mapping = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, reinterpret_cast<LPCWSTR>(id.utf16()));
     if (!mapping) return 4;
-    auto *shared = static_cast<Shared *>(MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(Shared)));
+    auto *extended = static_cast<TimedShared *>(MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(TimedShared)));
+    auto *shared = extended ? &extended->audio
+        : static_cast<Shared *>(MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(Shared)));
     if (!shared || shared->protocol != kProtocol) return 4;
+    // Mapping size AND the initialized header are required. Windows can round
+    // a legacy section to a page boundary, so a successful map alone is not enough.
+    auto *timing = extended && validTiming(extended->timing, qpcFrequency()) ? &extended->timing : nullptr;
+    if (timing) InterlockedExchange(&timing->supported, 1);
     HANDLE request = OpenEventW(SYNCHRONIZE, FALSE, reinterpret_cast<LPCWSTR>((id + "-request").utf16()));
     HANDLE response = OpenEventW(EVENT_MODIFY_STATE, FALSE, reinterpret_cast<LPCWSTR>((id + "-response").utf16()));
     if (!request || !response) return 4;
@@ -237,6 +244,8 @@ int run(QApplication &app, const QStringList &args) {
         warmupComplete = true;
         while (!stop) {
             if (WaitForSingleObject(request, 100) != WAIT_OBJECT_0) continue;
+            const auto sequence = timing ? timing->request : 0;
+            if (timing) timing->startedAt = qpcNow();
             const auto n = shared->frames;
             if (!n || n > kFrames) { InterlockedExchange(&shared->failed, 1); SetEvent(response); break; }
             for (int bus = 0; bus < data.numInputs; ++bus) {
@@ -284,6 +293,10 @@ int run(QApplication &app, const QStringList &args) {
                         (handler->returned.size() < 8192 || handler->returned.contains(queue->getParameterId())))
                         handler->returned[queue->getParameterId()] = value;
                 }
+            }
+            if (timing) {
+                timing->completedAt = qpcNow();
+                InterlockedExchange64(&timing->completedRequest, sequence);
             }
             SetEvent(response);
         }
